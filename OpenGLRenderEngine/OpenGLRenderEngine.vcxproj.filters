@@ -97,5 +97,8 @@
     <ClInclude Include="imgui\imstb_textedit.h">
       <Filter>Source Files\imgui</Filter>
     </ClInclude>
+    <ClInclude Include="camera.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>

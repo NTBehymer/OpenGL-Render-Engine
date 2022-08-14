@@ -9,23 +9,30 @@
 
 #include "shader.h"
 #include "stb_image.h"
+#include "camera.h"
 
 #include <stdexcept>
 #include <iostream>
 
-void framebuffer_size_callback(GLFWwindow* window, int width, int height) {
-    glViewport(0, 0, width, height);
-}
+Camera camera;
+static int WIDTH = 800;
+static int HEIGHT = 600;
+float lastX = WIDTH / 2.0f;
+float lastY = HEIGHT / 2.0f;
+bool firstMouse = true;
+float deltaTime = 0.0f;	// Time between current frame and last frame
+float lastFrame = 0.0f; // Time of last frame
+bool freeCam = false;
 
-void processInput(GLFWwindow* window) {
-    if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) glfwSetWindowShouldClose(window, true);
-}
+void framebuffer_size_callback(GLFWwindow* window, int width, int height);
+void mouse_callback(GLFWwindow* window, double xpos, double ypos);
+void scroll_callback(GLFWwindow* window, double xoffset, double yoffset);
+void key_callback(GLFWwindow* window, int key, int scancode, int action, int mods);
+void FreeCam(GLFWwindow* window);
+void processInput(GLFWwindow* window);
 
 int main()
 {
-    static int WIDTH = 800;
-    static int HEIGHT = 600;
-
     glfwInit();
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
@@ -41,6 +48,8 @@ int main()
 
     glfwMakeContextCurrent(window);
     glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
+    glfwSetCursorPosCallback(window, mouse_callback);
+    glfwSetScrollCallback(window, scroll_callback);
 
     if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
         throw std::runtime_error("failed to initialize GLAD");
@@ -186,8 +195,6 @@ int main()
     glUniform1i(glGetUniformLocation(ourShader.ID, "texture1"), 0); // Manually set texture location
     ourShader.setInt("texture2", 1); // Use shader class to set texture location
 
-    // Create a frustrum at the defined planes. Anything outside of the frustrum is clipped
-    //glm::ortho(0.0f, 800.0f, 0.0f, 600.0f, 0.1f, 100.0f); // (left, right, bottom, top, near, far)
 
     // IMGUI context
     const char* glsl_version = "#version 130";
@@ -206,7 +213,12 @@ int main()
     // Main render loop
     while (!glfwWindowShouldClose(window)) {
         // Input
+        float currentFrame = glfwGetTime();
+        deltaTime = currentFrame - lastFrame;
+        lastFrame = currentFrame;
+
         processInput(window);
+        FreeCam(window);
 
         ourShader.setFloat("visibility", vis);
 
@@ -219,9 +231,10 @@ int main()
         {
             ImGui::Begin("Renderer");
             ImGui::Checkbox("Wireframe", &wireframe);
+            ImGui::Checkbox("Free Cam [F]", &freeCam);
 
-            ImGui::SliderFloat("Rotation", &rot, 0.0f, 10.0f);            // Edit 1 float using a slider from 0.0f to 1.0f
-            ImGui::SliderFloat("Scale", &scale, 0.1f, 5.0f);
+            ImGui::SliderFloat("Rotation", &rot, 0.0f, 25.0f);            // Edit 1 float using a slider from 0.0f to 1.0f
+            ImGui::Text("Current FOV [Scroll]: %.0f", camera.Zoom);
             ImGui::SliderFloat("Visiblity", &vis, 0.0f, 1.0f);
 
             ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
@@ -246,9 +259,11 @@ int main()
 
         // GLM Context & Translations
         // create transformations
-        glm::mat4 view = glm::mat4(1.0f); // make sure to initialize matrix to identity matrix first
+        glm::mat4 view = camera.GetViewMatrix(); // make sure to initialize matrix to identity matrix first
         glm::mat4 projection = glm::mat4(1.0f);
-        projection = glm::perspective(glm::radians(45.0f), (float)WIDTH / (float)HEIGHT, 0.1f, 100.0f);
+        // Create a frustrum at the defined planes. Anything outside of the frustrum is clipped
+        //glm::mat4 ortho = glm::ortho(0.0f, 800.0f, 0.0f, 600.0f, 0.1f, 100.0f); // (left, right, bottom, top, near, far)
+        projection = glm::perspective(glm::radians(camera.Zoom), (float)WIDTH / (float)HEIGHT, 0.1f, 100.0f);
         view = glm::translate(view, glm::vec3(0.0f, 0.0f, -3.0f));
         // pass transformation matrices to the shader
         ourShader.setMat4("projection", projection); // note: currently we set the projection matrix each frame, but since the projection matrix rarely changes it's often best practice to set it outside the main loop only once.
@@ -259,7 +274,7 @@ int main()
         {
             glm::mat4 model = glm::mat4(1.0f);
             model = glm::translate(model, cubePositions[i]);
-            float angle = 20.0f * i;
+            float angle = 20.0f * (i+1);
             //(i % 3 == 0) ? angle = 20.0f * i : angle = 0; // Only rotate every third cube
             model = glm::rotate(model, glm::radians(angle) * rot, glm::vec3(1.0f, 0.3f, 0.5f));
             ourShader.setMat4("model", model);
@@ -288,4 +303,63 @@ int main()
 
     glfwTerminate();
     return 0;
+}
+
+void framebuffer_size_callback(GLFWwindow* window, int width, int height) {
+    glViewport(0, 0, width, height);
+}
+
+void processInput(GLFWwindow* window) {
+    if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) glfwSetWindowShouldClose(window, true);
+
+    float camSpeed = 2.5f * deltaTime;
+    glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ? camSpeed = 6.5f * deltaTime : camSpeed = 2.5f * deltaTime;
+    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) camera.ProcessKeyboard(FORWARD, camSpeed);
+    if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) camera.ProcessKeyboard(BACKWARD, camSpeed);
+    if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) camera.ProcessKeyboard(LEFT, camSpeed);
+    if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) camera.ProcessKeyboard(RIGHT, camSpeed);
+    if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS) camera.ProcessKeyboard(UP, camSpeed);
+    if (glfwGetKey(window, GLFW_KEY_LEFT_ALT) == GLFW_PRESS) camera.ProcessKeyboard(DOWN, camSpeed);
+
+    glfwSetKeyCallback(window, key_callback);
+}
+
+void mouse_callback(GLFWwindow* window, double xposIn, double yposIn) {
+    if (!freeCam) return;
+    
+    float xpos = static_cast<float>(xposIn);
+    float ypos = static_cast<float>(yposIn);
+
+    if (firstMouse) {
+        lastX = xpos;
+        lastY = ypos;
+        firstMouse = false;
+    }
+
+    float xoffset = xpos - lastX;
+    float yoffset = ypos - lastY;
+
+    lastX = xpos;
+    lastY = ypos;
+
+    camera.ProcessMouseMovement(xoffset, yoffset);
+}
+
+void scroll_callback(GLFWwindow* window, double xoffset, double yoffset) {
+    camera.ProcessMouseScroll(static_cast<float>(yoffset));
+}
+
+void key_callback(GLFWwindow* window, int key, int scancode, int action, int mods)
+{
+    if (action == GLFW_RELEASE) return; //only handle press events
+    if (key == GLFW_KEY_F) freeCam = !freeCam;
+}
+
+void FreeCam(GLFWwindow* window) {
+    if (freeCam) {
+        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+    }
+    else {
+        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+    }
 }
